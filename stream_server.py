@@ -16,6 +16,7 @@ import numpy as np
 latest_frame = None
 frame_lock = threading.Lock()
 running = True
+active_camera_type = "Detecting..."
 
 # ROI and camera config (normalized fractions)
 roi_config = {
@@ -26,20 +27,20 @@ roi_config = {
     "zoom": 1.0,
     "show_roi": True,
     "digits": 0,
-    "auto_snap": False,
 }
 
 # Live focus telemetry
 live_telemetry = {
     "sharpness": 0.0,
-    "focus_quality": "BLURRY", # "BLURRY", "FAIR", "SHARP"
+    "focus_quality": "BLURRY",
     "focus_color": [0, 0, 255], # BGR
+    "camera": "Unknown",
 }
 
 # Real-time scan state
 scan_lock = threading.Lock()
 scan_status = {
-    "state": "idle", # "idle", "detecting", "analyzing", "complete", "error"
+    "state": "idle",
     "message": "Ready. Align lock inside box. Watch the focus indicator turn green.",
     "candidates": [],
     "best_number": None,
@@ -53,7 +54,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pi Seal Scanner - Auto-Focus & OCR</title>
+<title>Pi Seal Scanner - CSI Camera Branch</title>
 <style>
   :root {
     --bg: #0a0e17;
@@ -65,6 +66,7 @@ HTML_PAGE = """<!DOCTYPE html>
     --success: #10b981;
     --warn: #f59e0b;
     --danger: #ef4444;
+    --purple: #a855f7;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -95,6 +97,14 @@ HTML_PAGE = """<!DOCTYPE html>
     padding: 3px 9px;
     border-radius: 9999px;
     animation: pulse 2s infinite;
+  }
+  .badge-cam {
+    background: var(--purple);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 9999px;
   }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .container {
@@ -267,9 +277,9 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
   <header>
-    <h1>Pi Seal Scanner <span class="badge-live">LIVE</span></h1>
+    <h1>Pi Seal Scanner <span class="badge-live">LIVE</span> <span class="badge-cam" id="camBadge">CSI Camera</span></h1>
     <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 4px;">
-      Live Focus-Assist: Move seal closer/further until the Focus Meter turns Green
+      Live CSI Camera Feed (Sony IMX219) with Real-Time Focus Assist & Auto-OCR
     </p>
   </header>
 
@@ -290,7 +300,7 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <div class="tip-box">
-      💡 <strong>Focus Tip:</strong> Fixed-focus lenses (like Logitech C270) are sharpest at <strong>30–40 cm distance</strong>. Use the <strong>Digital Zoom slider</strong> below (e.g. 1.5x–2.5x) to magnify the seal digits while keeping it at the sharp focal distance!
+      📷 <strong>CSI Camera Tips:</strong> If using a lens with a twist-focus ring, gently rotate the lens ring while watching the Focus Meter turn Green. You can also use the <strong>Digital Zoom slider</strong> to enlarge the seal text!
     </div>
 
     <div class="controls-card">
@@ -358,11 +368,13 @@ HTML_PAGE = """<!DOCTYPE html>
     let isScanning = false;
     let pollInterval = null;
 
-    // Fast telemetry poll for focus meter (runs every 300ms)
     setInterval(() => {
       fetch('/telemetry')
         .then(r => r.json())
         .then(data => {
+          if (data.camera) {
+            document.getElementById('camBadge').innerText = data.camera;
+          }
           const fill = document.getElementById('focusMeterFill');
           const badge = document.getElementById('focusStatusBadge');
           const pct = Math.min(100, Math.max(0, (data.sharpness / 600) * 100));
@@ -468,22 +480,51 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>
 """
 
-def camera_thread_loop(device_id=0, width=1280, height=720):
-    global latest_frame, running
-    cap = cv2.VideoCapture(device_id, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
+    global latest_frame, running, active_camera_type
 
-    if not cap.isOpened():
-        print(f"[Error] Could not open camera {device_id}")
-        return
+    # Try CSI (Picamera2) first if requested or auto
+    use_picam2 = False
+    picam2 = None
 
-    print(f"[Camera] Stream thread active on {device_id} ({width}x{height})")
+    if backend in ["auto", "csi"]:
+        try:
+            from picamera2 import Picamera2
+            picam2 = Picamera2(0)
+            config = picam2.create_video_configuration(main={"size": (width, height), "format": "RGB888"})
+            picam2.configure(config)
+            picam2.start()
+            use_picam2 = True
+            active_camera_type = "CSI Camera (Sony IMX219)"
+            live_telemetry["camera"] = "CSI Camera (Sony IMX219)"
+            print("[Camera] Picamera2 CSI camera successfully started!")
+        except Exception as e:
+            print(f"[Camera] Picamera2 init failed: {e}. Falling back to OpenCV V4L2...")
+
+    cap = None
+    if not use_picam2:
+        cap = cv2.VideoCapture(device_id, cv2.CAP_V4L2)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        active_camera_type = "USB Camera (/dev/video0)"
+        live_telemetry["camera"] = "USB Camera (/dev/video0)"
+        if not cap.isOpened():
+            print(f"[Error] Could not open camera {device_id}")
+            return
+        print(f"[Camera] V4L2 USB camera active on {device_id}")
+
     while running:
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            time.sleep(0.04)
-            continue
+        if use_picam2:
+            try:
+                frame = picam2.capture_array()
+            except Exception:
+                time.sleep(0.04)
+                continue
+        else:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                time.sleep(0.04)
+                continue
 
         # Handle digital zoom
         zoom = roi_config.get("zoom", 1.0)
@@ -519,24 +560,23 @@ def camera_thread_loop(device_id=0, width=1280, height=720):
                 live_telemetry["focus_color"] = [0, 0, 255] # Red
 
         time.sleep(0.03)
-    cap.release()
+
+    if use_picam2 and picam2 is not None:
+        picam2.stop()
+    elif cap is not None:
+        cap.release()
 
 def enhance_text_focus(crop_bgr):
-    """Enhance fuzzy or slightly out-of-focus characters with CLAHE + Unsharp Mask."""
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     if gray.shape[1] > 1200:
         scale = 1200 / gray.shape[1]
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-    # Local contrast enhancement
     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     contrast = clahe.apply(gray)
-
-    # Unsharp mask
     blurred = cv2.GaussianBlur(contrast, (0, 0), 2.0)
     sharpened = cv2.addWeighted(contrast, 1.5, blurred, -0.5, 0)
 
-    # Otsu adaptive binarization
     _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     if binary.mean() < 127:
         binary = cv2.bitwise_not(binary)
@@ -594,7 +634,6 @@ def scan_worker():
     collected = []
     start_t = time.time()
 
-    # Collect frames over ~2.5 seconds
     while time.time() - start_t < 2.5:
         with frame_lock:
             frame = latest_frame.copy() if latest_frame is not None else None
@@ -617,7 +656,6 @@ def scan_worker():
             scan_status["message"] = "No frames available. Check camera."
         return
 
-    # Sort descending by focus sharpness
     collected.sort(key=lambda x: x[0], reverse=True)
     best_shots = collected[:4]
     peak_sharpness = best_shots[0][0]
@@ -644,7 +682,6 @@ def scan_worker():
     ranked = []
     for num, meta in all_scores.items():
         avg_conf = meta["conf_sum"] / meta["count"]
-        # Multi-shot consensus bonus
         final_score = avg_conf + (meta["count"] - 1) * 5.0
         ranked.append((num, final_score))
 
@@ -709,7 +746,6 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                             continue
                         draw_frame = latest_frame.copy()
 
-                    # Dynamic color based on live focus quality
                     box_color = live_telemetry.get("focus_color", [0, 255, 255])
                     quality = live_telemetry.get("focus_quality", "BLURRY")
                     sharp_val = live_telemetry.get("sharpness", 0.0)
@@ -721,15 +757,11 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                         rw = int(roi_config["w"] * w)
                         rh = int(roi_config["h"] * h)
 
-                        # Draw reactive colored ROI box
                         cv2.rectangle(draw_frame, (rx, ry), (rx + rw, ry + rh), box_color, 2)
-
-                        # Center Crosshair
                         cx, cy = rx + rw // 2, ry + rh // 2
                         cv2.line(draw_frame, (cx - 15, cy), (cx + 15, cy), box_color, 1)
                         cv2.line(draw_frame, (cx, cy - 15), (cx, cy + 15), box_color, 1)
 
-                        # Focus status badge above box
                         status_str = f"FOCUS: {quality} ({int(sharp_val)})"
                         cv2.putText(draw_frame, status_str, (rx, max(22, ry - 8)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
@@ -769,12 +801,13 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
             self.send_error(404)
 
 def main():
-    parser = argparse.ArgumentParser(description="Live camera stream server with Auto-Focus and Auto-OCR")
+    parser = argparse.ArgumentParser(description="Live camera stream server with CSI and USB support")
     parser.add_argument("--port", type=int, default=8000, help="Web server port (default: 8000)")
-    parser.add_argument("--device", type=int, default=0, help="Camera device index (default: 0)")
+    parser.add_argument("--camera", choices=["auto", "csi", "usb"], default="auto", help="Camera source")
+    parser.add_argument("--device", type=int, default=0, help="Camera device index for USB (default: 0)")
     args = parser.parse_args()
 
-    t = threading.Thread(target=camera_thread_loop, args=(args.device,), daemon=True)
+    t = threading.Thread(target=camera_thread_loop, kwargs={"backend": args.camera, "device_id": args.device}, daemon=True)
     t.start()
 
     server_address = ("", args.port)

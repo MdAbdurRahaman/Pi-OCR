@@ -7,9 +7,10 @@ An offline, embedded optical character recognition (OCR) scanner designed for re
 ## 🛠 Hardware Architecture
 
 - **SBC**: Raspberry Pi Zero 2 W (Debian Bookworm / 64-bit)
-- **Camera Options**:
-  - 5 MP CSI Camera (e.g., OV5647 with wide-angle / fisheye lens and manual focus)
-  - Standard UVC USB Webcam (e.g., Logitech C270)
+- **Camera Detected**:
+  - **Sony IMX219 CSI Camera** (8 MP sensor, up to 3280x2464, Picamera2 / libcamera)
+  - Wide angle / adjustable focal length lens support
+  - Low-latency native MIPI-CSI interface
 - **Diffused Lighting**: Uniform white illumination to prevent specular glare on glossy seal surfaces.
 
 ---

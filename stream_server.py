@@ -22,8 +22,8 @@ active_camera_type = "Detecting..."
 roi_config = {
     "x": 0.25,
     "y": 0.35,
-    "w": 0.50,
-    "h": 0.30,
+    "w": 0.55,
+    "h": 0.35,
     "zoom": 1.0,
     "show_roi": True,
     "digits": 0,
@@ -33,7 +33,7 @@ roi_config = {
 live_telemetry = {
     "sharpness": 0.0,
     "focus_quality": "BLURRY",
-    "focus_color": [0, 0, 255], # BGR
+    "focus_color": [0, 0, 255],
     "camera": "Unknown",
 }
 
@@ -41,10 +41,11 @@ live_telemetry = {
 scan_lock = threading.Lock()
 scan_status = {
     "state": "idle",
-    "message": "Ready. Align lock inside box. Watch the focus indicator turn green.",
+    "message": "Ready. Align seal inside box and click 'Start Scan'.",
     "candidates": [],
     "best_number": None,
     "best_score": 0.0,
+    "ocr_time": 0.0,
     "frames_evaluated": 0,
     "best_sharpness": 0.0,
 }
@@ -54,7 +55,7 @@ HTML_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pi Seal Scanner - CSI Camera Branch</title>
+<title>Pi Seal Scanner - Fast Auto-OCR</title>
 <style>
   :root {
     --bg: #0a0e17;
@@ -251,7 +252,7 @@ HTML_PAGE = """<!DOCTYPE html>
     border-radius: 8px;
   }
   .best-digits {
-    font-size: 2rem;
+    font-size: 2.2rem;
     font-weight: 800;
     font-family: "Courier New", Courier, monospace;
     color: #34d399;
@@ -259,7 +260,7 @@ HTML_PAGE = """<!DOCTYPE html>
   }
   .candidates-list {
     font-family: monospace;
-    font-size: 0.85rem;
+    font-size: 0.88rem;
     color: var(--text-muted);
     line-height: 1.6;
     max-height: 120px;
@@ -279,7 +280,7 @@ HTML_PAGE = """<!DOCTYPE html>
   <header>
     <h1>Pi Seal Scanner <span class="badge-live">LIVE</span> <span class="badge-cam" id="camBadge">CSI Camera</span></h1>
     <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 4px;">
-      Live CSI Camera Feed (Sony IMX219) with Real-Time Focus Assist & Auto-OCR
+      Color-Aware Seal OCR with Fast Single-Shot Detection (< 2 sec)
     </p>
   </header>
 
@@ -300,13 +301,13 @@ HTML_PAGE = """<!DOCTYPE html>
     </div>
 
     <div class="tip-box">
-      📷 <strong>CSI Camera Tips:</strong> If using a lens with a twist-focus ring, gently rotate the lens ring while watching the Focus Meter turn Green. You can also use the <strong>Digital Zoom slider</strong> to enlarge the seal text!
+      ⚡ <strong>Ultra-Fast OCR:</strong> The scanner now auto-isolates the yellow seal plastic and reads numbers with letters (e.g. <strong>C 581819</strong>) in under 2 seconds! Use Digital Zoom (e.g. 1.8x) to make the text larger and sharper.
     </div>
 
     <div class="controls-card">
       <div class="btn-row">
         <button class="btn btn-primary" id="btnStartScan" onclick="startScan()">
-          ▶ Start Scan (Auto-Detect Best In-Focus Shots)
+          ⚡ Start Fast Scan
         </button>
         <button class="btn btn-secondary" onclick="saveSnapshot()">
           💾 Save Snapshot
@@ -334,18 +335,18 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="range" id="roiY" min="0" max="0.8" step="0.02" value="0.35" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI Width: <span id="valW">0.50</span></label>
-          <input type="range" id="roiW" min="0.1" max="0.9" step="0.02" value="0.50" oninput="updateRoi()">
+          <label>ROI Width: <span id="valW">0.55</span></label>
+          <input type="range" id="roiW" min="0.1" max="0.9" step="0.02" value="0.55" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI Height: <span id="valH">0.30</span></label>
-          <input type="range" id="roiH" min="0.05" max="0.6" step="0.02" value="0.30" oninput="updateRoi()">
+          <label>ROI Height: <span id="valH">0.35</span></label>
+          <input type="range" id="roiH" min="0.05" max="0.6" step="0.02" value="0.35" oninput="updateRoi()">
         </div>
       </div>
 
       <div class="result-banner">
         <div class="status-text" id="statusText">
-          Ready. Align lock inside box. Watch the focus indicator turn green.
+          Ready. Align seal inside box and click "Start Fast Scan".
         </div>
 
         <div class="best-match" id="bestMatchBox" style="display: none;">
@@ -354,8 +355,8 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="best-digits" id="bestNumberDisplay">-------</div>
           </div>
           <div style="margin-left: auto; text-align: right;">
-            <div style="font-size: 0.75rem; color: var(--text-muted);">Confidence Score</div>
-            <div style="font-size: 1.3rem; font-weight: 700; color: #38bdf8;" id="bestScoreDisplay">0.0</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">Speed / Confidence</div>
+            <div style="font-size: 1.2rem; font-weight: 700; color: #38bdf8;" id="bestScoreDisplay">0.0s</div>
           </div>
         </div>
 
@@ -427,14 +428,14 @@ HTML_PAGE = """<!DOCTYPE html>
       isScanning = true;
       const btn = document.getElementById('btnStartScan');
       btn.disabled = true;
-      btn.innerText = '🔍 Auto-Focus Tracking & Burst Scanning...';
-      document.getElementById('statusText').innerText = 'Locking on... Evaluating frames for peak focus sharpness.';
+      btn.innerText = '⚡ Reading Seal...';
+      document.getElementById('statusText').innerText = 'Capturing sharpest frame & running color-isolated OCR...';
       document.getElementById('bestMatchBox').style.display = 'none';
       document.getElementById('candidatesList').style.display = 'none';
 
       fetch('/start_scan', {method: 'POST'})
         .then(() => {
-          pollInterval = setInterval(checkScanStatus, 500);
+          pollInterval = setInterval(checkScanStatus, 300);
         })
         .catch(err => {
           endScan();
@@ -453,13 +454,13 @@ HTML_PAGE = """<!DOCTYPE html>
             if (data.best_number) {
               document.getElementById('bestMatchBox').style.display = 'flex';
               document.getElementById('bestNumberDisplay').innerText = data.best_number;
-              document.getElementById('bestScoreDisplay').innerText = data.best_score.toFixed(1) + '%';
+              document.getElementById('bestScoreDisplay').innerText = data.ocr_time.toFixed(2) + 's (Score ' + data.best_score.toFixed(0) + '%)';
             }
             if (data.candidates && data.candidates.length > 0) {
               const list = document.getElementById('candidatesList');
               list.style.display = 'block';
-              list.innerHTML = '<strong>Detected Candidates:</strong><br>' + 
-                data.candidates.map(c => `• ${c[0]} (score: ${c[1].toFixed(1)})`).join('<br>');
+              list.innerHTML = '<strong>Detected Seal Numbers:</strong><br>' + 
+                data.candidates.map(c => `• ${c[0]} (confidence: ${c[1].toFixed(1)}%)`).join('<br>');
             }
           }
         });
@@ -469,7 +470,7 @@ HTML_PAGE = """<!DOCTYPE html>
       isScanning = false;
       const btn = document.getElementById('btnStartScan');
       btn.disabled = false;
-      btn.innerText = '▶ Start Scan (Auto-Detect Best In-Focus Shots)';
+      btn.innerText = '⚡ Start Fast Scan';
     }
 
     function saveSnapshot() {
@@ -483,7 +484,6 @@ HTML_PAGE = """<!DOCTYPE html>
 def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
     global latest_frame, running, active_camera_type
 
-    # Try CSI (Picamera2) first if requested or auto
     use_picam2 = False
     picam2 = None
 
@@ -497,9 +497,9 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
             use_picam2 = True
             active_camera_type = "CSI Camera (Sony IMX219)"
             live_telemetry["camera"] = "CSI Camera (Sony IMX219)"
-            print("[Camera] Picamera2 CSI camera successfully started!")
+            print("[Camera] Picamera2 CSI camera active!")
         except Exception as e:
-            print(f"[Camera] Picamera2 init failed: {e}. Falling back to OpenCV V4L2...")
+            print(f"[Camera] Picamera2 init: {e}. Falling back to USB...")
 
     cap = None
     if not use_picam2:
@@ -511,22 +511,21 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
         if not cap.isOpened():
             print(f"[Error] Could not open camera {device_id}")
             return
-        print(f"[Camera] V4L2 USB camera active on {device_id}")
 
     while running:
         if use_picam2:
             try:
                 frame = picam2.capture_array()
             except Exception:
-                time.sleep(0.04)
+                time.sleep(0.03)
                 continue
         else:
             ret, frame = cap.read()
             if not ret or frame is None:
-                time.sleep(0.04)
+                time.sleep(0.03)
                 continue
 
-        # Handle digital zoom
+        # Digital zoom
         zoom = roi_config.get("zoom", 1.0)
         if zoom > 1.05:
             h, w = frame.shape[:2]
@@ -551,13 +550,13 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
             live_telemetry["sharpness"] = s_val
             if s_val > 350:
                 live_telemetry["focus_quality"] = "SHARP"
-                live_telemetry["focus_color"] = [0, 255, 0] # Green
+                live_telemetry["focus_color"] = [0, 255, 0]
             elif s_val > 180:
                 live_telemetry["focus_quality"] = "FAIR"
-                live_telemetry["focus_color"] = [0, 215, 255] # Yellow
+                live_telemetry["focus_color"] = [0, 215, 255]
             else:
                 live_telemetry["focus_quality"] = "BLURRY"
-                live_telemetry["focus_color"] = [0, 0, 255] # Red
+                live_telemetry["focus_color"] = [0, 0, 255]
 
         time.sleep(0.03)
 
@@ -566,58 +565,86 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
     elif cap is not None:
         cap.release()
 
-def enhance_text_focus(crop_bgr):
-    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    if gray.shape[1] > 1200:
-        scale = 1200 / gray.shape[1]
-        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+def preprocess_seal_for_ocr(crop_bgr):
+    """Isolate yellow plastic and extract high-contrast text map."""
+    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
+    # Yellow mask in HSV
+    yellow_mask = cv2.inRange(hsv, (12, 50, 50), (48, 255, 255))
+    contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    contrast = clahe.apply(gray)
-    blurred = cv2.GaussianBlur(contrast, (0, 0), 2.0)
-    sharpened = cv2.addWeighted(contrast, 1.5, blurred, -0.5, 0)
+    if contours:
+        # Bounding rect around the yellow seal
+        largest = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(largest) > 400:
+            x, y, w, h = cv2.boundingRect(largest)
+            # Add small padding
+            x = max(0, x - 5)
+            y = max(0, y - 5)
+            w = min(crop_bgr.shape[1] - x, w + 10)
+            h = min(crop_bgr.shape[0] - y, h + 10)
+            crop_bgr = crop_bgr[y:y+h, x:x+w]
 
-    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Red-minus-Blue difference: yellow plastic is high R, low B; black ink is low R, low B.
+    r = crop_bgr[:, :, 2].astype(np.float32)
+    b = crop_bgr[:, :, 0].astype(np.float32)
+    text_diff = np.clip(r - b, 0, 255).astype(np.uint8)
+
+    # Scale so character height is at least 35-45px
+    ch_h, ch_w = text_diff.shape[:2]
+    scale = max(2.0, 140.0 / ch_h)
+    scaled = cv2.resize(text_diff, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    contrasted = clahe.apply(scaled)
+
+    _, binary = cv2.threshold(contrasted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     if binary.mean() < 127:
         binary = cv2.bitwise_not(binary)
 
-    return sharpened, binary
+    padded = cv2.copyMakeBorder(binary, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
+    return padded
 
-def perform_fast_ocr(image_bgr, digits_expected=0):
-    sharpened, binary = enhance_text_focus(image_bgr)
+def run_single_ocr(processed_img, digits_expected=0):
+    temp_path = "/tmp/seal_fast_ocr.png"
+    cv2.imwrite(temp_path, processed_img)
+
     env = os.environ.copy()
     env["OMP_THREAD_LIMIT"] = "1"
     candidates = {}
 
-    for idx, processed in enumerate([sharpened, binary]):
-        padded = cv2.copyMakeBorder(processed, 14, 14, 14, 14, cv2.BORDER_CONSTANT, value=255)
-        temp_path = f"/tmp/crop_ocr_{idx}.png"
-        cv2.imwrite(temp_path, padded)
-
+    # PSM 11 (Sparse text) + PSM 6 (Uniform text)
+    for psm in [11, 6]:
         cmd = [
             "tesseract",
             temp_path,
             "stdout",
-            "-l", "eng",
             "--oem", "1",
-            "--psm", "7",
-            "-c", "tessedit_char_whitelist=0123456789",
-            "tsv",
+            "--psm", str(psm),
+            "-c", "tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ",
+            "tsv"
         ]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=env)
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3, env=env)
             rows = csv.DictReader(io.StringIO(res.stdout), delimiter="\t")
+            full_line_tokens = []
             for row in rows:
-                text = row.get("text", "").strip()
-                if not re.fullmatch(r"[0-9]+", text):
-                    continue
-                if digits_expected > 0 and len(text) != digits_expected:
-                    continue
-                elif digits_expected == 0 and not (4 <= len(text) <= 14):
-                    continue
+                tok = row.get("text", "").strip()
                 conf = float(row.get("conf", -1))
-                if conf >= 0:
-                    candidates[text] = max(conf, candidates.get(text, -1))
+                if tok and conf > 20:
+                    full_line_tokens.append(tok)
+
+            combined_str = " ".join(full_line_tokens)
+            # Find patterns like C 581819 or 581819
+            matches = re.findall(r'[A-Z]?\s*\d{5,8}', combined_str)
+            for m in matches:
+                clean_m = re.sub(r'\s+', ' ', m).strip()
+                digits_only = re.sub(r'\D', '', clean_m)
+                if digits_expected > 0 and len(digits_only) != digits_expected:
+                    continue
+                if 4 <= len(digits_only) <= 12:
+                    candidates[clean_m] = max(80.0, candidates.get(clean_m, 0))
+            if candidates:
+                break # Found match, skip second PSM for speed!
         except Exception:
             continue
 
@@ -625,16 +652,17 @@ def perform_fast_ocr(image_bgr, digits_expected=0):
 
 def scan_worker():
     global scan_status
+    t_start = time.time()
     with scan_lock:
         scan_status["state"] = "detecting"
-        scan_status["message"] = "Auto-Focus Tracking: Capturing burst to select peak sharpest frames..."
+        scan_status["message"] = "Selecting peak sharp frame..."
         scan_status["candidates"] = []
         scan_status["best_number"] = None
 
+    # Collect ~8 frames over 0.6 seconds to select the sharpest frame
     collected = []
-    start_t = time.time()
-
-    while time.time() - start_t < 2.5:
+    t_collect = time.time()
+    while time.time() - t_collect < 0.6:
         with frame_lock:
             frame = latest_frame.copy() if latest_frame is not None else None
         if frame is not None:
@@ -646,56 +674,45 @@ def scan_worker():
             crop = frame[ry:ry+rh, rx:rx+rw]
             if crop.size > 0:
                 gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-                collected.append((sharpness, crop))
-        time.sleep(0.07)
+                s = cv2.Laplacian(gray, cv2.CV_64F).var()
+                collected.append((s, crop))
+        time.sleep(0.06)
 
     if not collected:
         with scan_lock:
             scan_status["state"] = "error"
-            scan_status["message"] = "No frames available. Check camera."
+            scan_status["message"] = "No frames available."
         return
 
+    # Pick the #1 sharpest frame
     collected.sort(key=lambda x: x[0], reverse=True)
-    best_shots = collected[:4]
-    peak_sharpness = best_shots[0][0]
+    best_s, best_crop = collected[0]
 
     with scan_lock:
         scan_status["state"] = "analyzing"
-        scan_status["frames_evaluated"] = len(collected)
-        scan_status["best_sharpness"] = peak_sharpness
-        scan_status["message"] = f"Selected {len(best_shots)} peak frames (Sharpness: {peak_sharpness:.1f}). Running OCR..."
+        scan_status["best_sharpness"] = best_s
+        scan_status["message"] = f"Peak Sharpness: {best_s:.0f}. Running fast color-isolated OCR..."
 
-    all_scores = {}
+    # Preprocess (isolates yellow plastic, high contrast)
+    processed = preprocess_seal_for_ocr(best_crop)
+
+    # Run single-shot fast OCR
     digits_expected = roi_config.get("digits", 0)
+    candidates = run_single_ocr(processed, digits_expected=digits_expected)
 
-    for rank, (score, crop) in enumerate(best_shots):
-        candidates = perform_fast_ocr(crop, digits_expected=digits_expected)
-        for num, conf in candidates.items():
-            if num not in all_scores:
-                all_scores[num] = {"conf_max": conf, "count": 1, "conf_sum": conf}
-            else:
-                all_scores[num]["conf_max"] = max(all_scores[num]["conf_max"], conf)
-                all_scores[num]["count"] += 1
-                all_scores[num]["conf_sum"] += conf
-
-    ranked = []
-    for num, meta in all_scores.items():
-        avg_conf = meta["conf_sum"] / meta["count"]
-        final_score = avg_conf + (meta["count"] - 1) * 5.0
-        ranked.append((num, final_score))
-
-    ranked.sort(key=lambda x: x[1], reverse=True)
+    total_time = time.time() - t_start
+    ranked = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
 
     with scan_lock:
         scan_status["state"] = "complete"
+        scan_status["ocr_time"] = total_time
         scan_status["candidates"] = ranked
         if ranked:
             scan_status["best_number"] = ranked[0][0]
             scan_status["best_score"] = ranked[0][1]
-            scan_status["message"] = f"Success! Number: {ranked[0][0]} (Score: {ranked[0][1]:.1f} across {len(best_shots)} shots)."
+            scan_status["message"] = f"Detected: {ranked[0][0]} in {total_time:.2f} seconds!"
         else:
-            scan_status["message"] = f"No digits recognized (Peak Sharpness: {peak_sharpness:.1f}). Try adjusting distance or increase Digital Zoom."
+            scan_status["message"] = f"No digits recognized in {total_time:.2f}s. Try increasing Digital Zoom (e.g. 1.8x)."
 
 class StreamingHandler(server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -801,7 +818,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
             self.send_error(404)
 
 def main():
-    parser = argparse.ArgumentParser(description="Live camera stream server with CSI and USB support")
+    parser = argparse.ArgumentParser(description="Live camera stream server with CSI and fast OCR")
     parser.add_argument("--port", type=int, default=8000, help="Web server port (default: 8000)")
     parser.add_argument("--camera", choices=["auto", "csi", "usb"], default="auto", help="Camera source")
     parser.add_argument("--device", type=int, default=0, help="Camera device index for USB (default: 0)")

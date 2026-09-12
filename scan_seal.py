@@ -68,6 +68,12 @@ if gray.shape[1] > 1200:
     scale = 1200 / gray.shape[1]
     gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
+# Contrast Limited Adaptive Histogram Equalization + Unsharp Mask
+clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+contrast = clahe.apply(gray)
+blurred = cv2.GaussianBlur(contrast, (0, 0), 2.0)
+gray = cv2.addWeighted(contrast, 1.5, blurred, -0.5, 0)
+
 _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
 # Expect dark digits on a lighter background

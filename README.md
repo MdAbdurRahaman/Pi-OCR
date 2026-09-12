@@ -108,12 +108,37 @@ python pi_client.py scan test.jpg --digits 7
 
 ---
 
+### Live Video Feed & Web UI (Real-time Alignment)
+
+To position your seal in real time, view the live video feed directly in your browser:
+
+- Open: **`http://pizero2.local:8000`** (or **`http://192.168.68.145:8000`**)
+- **Features**:
+  - Live 15-30 FPS MJPEG video stream.
+  - Interactive ROI bounding box with center crosshair.
+  - Sliders to adjust ROI X, Y, Width, and Height visually.
+  - One-click **"📸 Capture & Run OCR"** directly inside the web UI.
+  - **"💾 Save Snapshot"** button.
+
+The streaming server is configured as a systemd service (`seal-stream.service`):
+```bash
+# Check status
+sudo systemctl status seal-stream
+
+# Stop or restart stream
+sudo systemctl stop seal-stream
+sudo systemctl restart seal-stream
+```
+
+---
+
 ## 📂 Project Structure
 
 ```
 Pi-OCR/
 ├── capture_seal.py        # Picamera2 / rpicam-still capture script
 ├── scan_seal.py           # Core OCR and preprocessing engine
+├── stream_server.py       # Live MJPEG streaming web server with interactive ROI guides
 ├── run_offline_scanner.py # All-in-one capture & OCR runner
 ├── pi_client.py           # PC client to trigger and sync with the Pi
 ├── .gitignore

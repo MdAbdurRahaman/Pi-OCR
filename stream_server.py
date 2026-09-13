@@ -20,10 +20,10 @@ active_camera_type = "Detecting..."
 
 # ROI and camera config (normalized fractions)
 roi_config = {
-    "x": 0.25,
-    "y": 0.35,
-    "w": 0.55,
-    "h": 0.35,
+    "x": 0.15,
+    "y": 0.20,
+    "w": 0.70,
+    "h": 0.55,
     "zoom": 1.0,
     "show_roi": True,
     "digits": 0,
@@ -41,13 +41,15 @@ live_telemetry = {
 scan_lock = threading.Lock()
 scan_status = {
     "state": "idle",
-    "message": "Ready. Align seal inside box and click 'Start Scan'.",
+    "message": "Ready. Align seal inside box and click 'Start Fast Scan'.",
     "candidates": [],
+    "all_words": [],
     "best_number": None,
     "best_score": 0.0,
     "ocr_time": 0.0,
     "frames_evaluated": 0,
     "best_sharpness": 0.0,
+    "has_image": False,
 }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -327,20 +329,20 @@ HTML_PAGE = """<!DOCTYPE html>
           <input type="range" id="zoom" min="1.0" max="3.0" step="0.1" value="1.0" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI X (Left): <span id="valX">0.25</span></label>
-          <input type="range" id="roiX" min="0" max="0.8" step="0.02" value="0.25" oninput="updateRoi()">
+          <label>ROI X (Left): <span id="valX">0.15</span></label>
+          <input type="range" id="roiX" min="0" max="0.8" step="0.02" value="0.15" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI Y (Top): <span id="valY">0.35</span></label>
-          <input type="range" id="roiY" min="0" max="0.8" step="0.02" value="0.35" oninput="updateRoi()">
+          <label>ROI Y (Top): <span id="valY">0.20</span></label>
+          <input type="range" id="roiY" min="0" max="0.8" step="0.02" value="0.20" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI Width: <span id="valW">0.55</span></label>
-          <input type="range" id="roiW" min="0.1" max="0.9" step="0.02" value="0.55" oninput="updateRoi()">
+          <label>ROI Width: <span id="valW">0.70</span></label>
+          <input type="range" id="roiW" min="0.1" max="0.95" step="0.02" value="0.70" oninput="updateRoi()">
         </div>
         <div class="slider-item">
-          <label>ROI Height: <span id="valH">0.35</span></label>
-          <input type="range" id="roiH" min="0.05" max="0.6" step="0.02" value="0.35" oninput="updateRoi()">
+          <label>ROI Height: <span id="valH">0.55</span></label>
+          <input type="range" id="roiH" min="0.05" max="0.8" step="0.02" value="0.55" oninput="updateRoi()">
         </div>
       </div>
 
@@ -351,7 +353,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div class="best-match" id="bestMatchBox" style="display: none;">
           <div>
-            <div style="font-size: 0.75rem; text-transform: uppercase; color: #6ee7b7; font-weight: 600;">Detected Seal Number</div>
+            <div style="font-size: 0.75rem; text-transform: uppercase; color: #6ee7b7; font-weight: 600;">Detected Seal / Text</div>
             <div class="best-digits" id="bestNumberDisplay">-------</div>
           </div>
           <div style="margin-left: auto; text-align: right;">
@@ -361,6 +363,11 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div class="candidates-list" id="candidatesList" style="display: none;"></div>
+
+        <div id="detectionPreviewBox" style="display: none; margin-top: 14px; text-align: center;">
+          <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 6px; font-weight: 600;">EDATEC Localized Text Detection (Green Bounding Boxes):</div>
+          <img id="detectedResultImg" style="max-width: 100%; border-radius: 8px; border: 1px solid #223250; box-shadow: 0 4px 12px rgba(0,0,0,0.5);" />
+        </div>
       </div>
     </div>
   </div>
@@ -461,6 +468,17 @@ HTML_PAGE = """<!DOCTYPE html>
               list.style.display = 'block';
               list.innerHTML = '<strong>Detected Seal Numbers:</strong><br>' + 
                 data.candidates.map(c => `• ${c[0]} (confidence: ${c[1].toFixed(1)}%)`).join('<br>');
+            } else if (data.all_words && data.all_words.length > 0) {
+              const list = document.getElementById('candidatesList');
+              list.style.display = 'block';
+              list.innerHTML = '<strong>Recognized Words:</strong><br>' + 
+                data.all_words.map(w => `• ${w[0]} (${w[1]}%)`).join(' ');
+            }
+            if (data.has_image) {
+              const pbox = document.getElementById('detectionPreviewBox');
+              const pimg = document.getElementById('detectedResultImg');
+              pimg.src = '/detected_result.jpg?t=' + Date.now();
+              pbox.style.display = 'block';
             }
           }
         });
@@ -481,8 +499,10 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>
 """
 
+active_picam2 = None
+
 def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
-    global latest_frame, running, active_camera_type
+    global latest_frame, running, active_camera_type, active_picam2
 
     use_picam2 = False
     picam2 = None
@@ -491,13 +511,18 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
         try:
             from picamera2 import Picamera2
             picam2 = Picamera2(0)
-            config = picam2.create_video_configuration(main={"size": (width, height), "format": "RGB888"})
+            # Hardware dual-stream: main (1280x720) for high-res OCR/snapshot, lores (640x360) for fast streaming
+            config = picam2.create_video_configuration(
+                main={"size": (width, height), "format": "BGR888"},
+                lores={"size": (640, 360), "format": "YUV420"}
+            )
             picam2.configure(config)
             picam2.start()
             use_picam2 = True
-            active_camera_type = "CSI Camera (Sony IMX219)"
+            active_picam2 = picam2
+            active_camera_type = "CSI Camera (Sony IMX219 Dual-Stream)"
             live_telemetry["camera"] = "CSI Camera (Sony IMX219)"
-            print("[Camera] Picamera2 CSI camera active!")
+            print("[Camera] Picamera2 CSI hardware dual-stream active!")
         except Exception as e:
             print(f"[Camera] Picamera2 init: {e}. Falling back to USB...")
 
@@ -512,193 +537,234 @@ def camera_thread_loop(backend="auto", device_id=0, width=1280, height=720):
             print(f"[Error] Could not open camera {device_id}")
             return
 
+    frame_counter = 0
     while running:
         if use_picam2:
             try:
-                frame = picam2.capture_array()
+                # Fast lores hardware preview (640x360 YUV420)
+                yuv = picam2.capture_array("lores")
+                preview = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
             except Exception:
-                time.sleep(0.03)
+                time.sleep(0.01)
                 continue
         else:
             ret, frame = cap.read()
             if not ret or frame is None:
-                time.sleep(0.03)
+                time.sleep(0.02)
                 continue
+            preview = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
 
-        # Digital zoom
+        # Digital zoom on preview if requested
         zoom = roi_config.get("zoom", 1.0)
         if zoom > 1.05:
-            h, w = frame.shape[:2]
-            zh, zw = int(h / zoom), int(w / zoom)
-            y1 = (h - zh) // 2
-            x1 = (w - zw) // 2
-            frame = cv2.resize(frame[y1:y1+zh, x1:x1+zw], (w, h), interpolation=cv2.INTER_LINEAR)
+            ph, pw = preview.shape[:2]
+            zh, zw = int(ph / zoom), int(pw / zoom)
+            y1 = (ph - zh) // 2
+            x1 = (pw - zw) // 2
+            preview = cv2.resize(preview[y1:y1+zh, x1:x1+zw], (pw, ph), interpolation=cv2.INTER_LINEAR)
 
         with frame_lock:
-            latest_frame = frame.copy()
+            latest_frame = preview
 
-        # Update real-time focus telemetry
-        h, w = frame.shape[:2]
-        rx = int(roi_config["x"] * w)
-        ry = int(roi_config["y"] * h)
-        rw = int(roi_config["w"] * w)
-        rh = int(roi_config["h"] * h)
-        crop = frame[ry:ry+rh, rx:rx+rw]
-        if crop.size > 0:
-            gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            s_val = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
-            live_telemetry["sharpness"] = s_val
-            if s_val > 350:
-                live_telemetry["focus_quality"] = "SHARP"
-                live_telemetry["focus_color"] = [0, 255, 0]
-            elif s_val > 180:
-                live_telemetry["focus_quality"] = "FAIR"
-                live_telemetry["focus_color"] = [0, 215, 255]
-            else:
-                live_telemetry["focus_quality"] = "BLURRY"
-                live_telemetry["focus_color"] = [0, 0, 255]
+        # Throttle focus calculation to ~6-7 Hz (every 4th frame) to save CPU
+        frame_counter += 1
+        if frame_counter % 4 == 0:
+            ph, pw = preview.shape[:2]
+            rx = int(roi_config["x"] * pw)
+            ry = int(roi_config["y"] * ph)
+            rw = int(roi_config["w"] * pw)
+            rh = int(roi_config["h"] * ph)
+            crop = preview[ry:ry+rh, rx:rx+rw]
+            if crop.size > 0:
+                gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+                s_val = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
+                live_telemetry["sharpness"] = s_val
+                if s_val > 350:
+                    live_telemetry["focus_quality"] = "SHARP"
+                    live_telemetry["focus_color"] = [0, 255, 0]
+                elif s_val > 160:
+                    live_telemetry["focus_quality"] = "FAIR"
+                    live_telemetry["focus_color"] = [0, 215, 255]
+                else:
+                    live_telemetry["focus_quality"] = "BLURRY"
+                    live_telemetry["focus_color"] = [0, 0, 255]
 
-        time.sleep(0.03)
+        time.sleep(0.01)
 
     if use_picam2 and picam2 is not None:
         picam2.stop()
     elif cap is not None:
         cap.release()
 
-def preprocess_seal_for_ocr(crop_bgr):
-    """Isolate yellow plastic and extract high-contrast text map."""
-    hsv = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2HSV)
-    # Yellow mask in HSV
-    yellow_mask = cv2.inRange(hsv, (12, 50, 50), (48, 255, 255))
-    contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+def run_edatec_ocr_pipeline(crop_bgr, digits_expected=0):
+    """
+    EDATEC Multi-pass OCR Pipeline:
+    Uses OpenCV Grayscale, Otsu Thresholding, Morphological Opening,
+    Inverted Thresholding, and Color-Contrast Enhancement with Pytesseract
+    bounding box extraction (https://edatec.cn/rpi-forum/hardware/1353.html).
+    """
+    annotated = crop_bgr.copy()
+    ch, cw = crop_bgr.shape[:2]
 
-    if contours:
-        # Bounding rect around the yellow seal
-        largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) > 400:
-            x, y, w, h = cv2.boundingRect(largest)
-            # Add small padding
-            x = max(0, x - 5)
-            y = max(0, y - 5)
-            w = min(crop_bgr.shape[1] - x, w + 10)
-            h = min(crop_bgr.shape[0] - y, h + 10)
-            crop_bgr = crop_bgr[y:y+h, x:x+w]
+    # 1. EDATEC Grayscale & Otsu
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Red-minus-Blue difference: yellow plastic is high R, low B; black ink is low R, low B.
+    # 2. EDATEC Morphological Opening
+    kernel = np.ones((3, 3), np.uint8)
+    opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+    # 3. EDATEC Inverted Thresholding
+    thresh_inv = cv2.bitwise_not(thresh)
+
+    # 4. Color-Contrast CLAHE difference (for colored/yellow security seals)
     r = crop_bgr[:, :, 2].astype(np.float32)
     b = crop_bgr[:, :, 0].astype(np.float32)
-    text_diff = np.clip(r - b, 0, 255).astype(np.uint8)
-
-    # Scale so character height is at least 35-45px
-    ch_h, ch_w = text_diff.shape[:2]
-    scale = max(2.0, 140.0 / ch_h)
-    scaled = cv2.resize(text_diff, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-
+    diff = np.clip(r - b, 0, 255).astype(np.uint8)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    contrasted = clahe.apply(scaled)
+    contrasted = clahe.apply(diff)
+    _, color_bin = cv2.threshold(contrasted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if color_bin.mean() < 127:
+        color_bin = cv2.bitwise_not(color_bin)
 
-    _, binary = cv2.threshold(contrasted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if binary.mean() < 127:
-        binary = cv2.bitwise_not(binary)
+    # Optimal passes: color contrast for colored seals, standard Otsu, and opening
+    passes = [
+        ("color_contrast", color_bin),
+        ("edatec_thresh", thresh),
+        ("edatec_opened", opened)
+    ]
 
-    padded = cv2.copyMakeBorder(binary, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
-    return padded
-
-def run_single_ocr(processed_img, digits_expected=0):
-    temp_path = "/tmp/seal_fast_ocr.png"
-    cv2.imwrite(temp_path, processed_img)
-
-    env = os.environ.copy()
-    env["OMP_THREAD_LIMIT"] = "1"
     candidates = {}
+    all_words = []
+    detected_boxes = []
 
-    # PSM 11 (Sparse text) + PSM 6 (Uniform text)
-    for psm in [11, 6]:
-        cmd = [
-            "tesseract",
-            temp_path,
-            "stdout",
-            "--oem", "1",
-            "--psm", str(psm),
-            "-c", "tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ",
-            "tsv"
-        ]
+    # Keep resolution ideal for fast Tesseract (height ~120-280px)
+    if ch < 90:
+        scale = 100.0 / ch
+        scaled_base = cv2.resize(crop_bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    elif ch > 320:
+        scale = 280.0 / ch
+    else:
+        scale = 1.0
+
+    for name, p_img in passes:
+        if scale != 1.0:
+            interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC
+            scaled = cv2.resize(p_img, (0, 0), fx=scale, fy=scale, interpolation=interp)
+        else:
+            scaled = p_img
+        bordered = cv2.copyMakeBorder(scaled, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255)
+
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3, env=env)
-            rows = csv.DictReader(io.StringIO(res.stdout), delimiter="\t")
-            full_line_tokens = []
-            for row in rows:
-                tok = row.get("text", "").strip()
-                conf = float(row.get("conf", -1))
-                if tok and conf > 20:
-                    full_line_tokens.append(tok)
+            import pytesseract
+            from pytesseract import Output
+            d = pytesseract.image_to_data(
+                bordered,
+                output_type=Output.DICT,
+                config="--oem 1 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ "
+            )
 
-            combined_str = " ".join(full_line_tokens)
-            # Find patterns like C 581819 or 581819
-            matches = re.findall(r'[A-Z]?\s*\d{5,8}', combined_str)
+            line_tokens = []
+            for i in range(len(d['text'])):
+                txt = d['text'][i].strip()
+                conf = int(float(d['conf'][i]))
+                if txt and conf > 30:
+                    bx = int(max(0, (d['left'][i] - 12) / scale))
+                    by = int(max(0, (d['top'][i] - 12) / scale))
+                    bw = int(d['width'][i] / scale)
+                    bh = int(d['height'][i] / scale)
+                    line_tokens.append(txt)
+                    all_words.append((txt, conf))
+                    detected_boxes.append((txt, bx, by, bw, bh, conf))
+
+                    # Draw EDATEC green bounding box and text annotation
+                    cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+                    cv2.putText(annotated, f"{txt} ({conf}%)", (bx, max(14, by - 4)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
+
+            full_line = " ".join(line_tokens)
+            # Match seal number patterns like C 581819, 581819
+            matches = re.findall(r'[A-Z]?\s*\d{4,9}', full_line)
             for m in matches:
                 clean_m = re.sub(r'\s+', ' ', m).strip()
                 digits_only = re.sub(r'\D', '', clean_m)
                 if digits_expected > 0 and len(digits_only) != digits_expected:
                     continue
                 if 4 <= len(digits_only) <= 12:
-                    candidates[clean_m] = max(80.0, candidates.get(clean_m, 0))
+                    candidates[clean_m] = max(candidates.get(clean_m, 0), 85.0)
+
             if candidates:
-                break # Found match, skip second PSM for speed!
-        except Exception:
+                break # Fast exit once seal number is recognized!
+        except Exception as e:
             continue
 
-    return candidates
+    # Write annotated image for UI inspection
+    cv2.imwrite("/tmp/detected_result.jpg", annotated)
+    return candidates, all_words, annotated
 
 def scan_worker():
     global scan_status
     t_start = time.time()
     with scan_lock:
         scan_status["state"] = "detecting"
-        scan_status["message"] = "Selecting peak sharp frame..."
+        scan_status["message"] = "Capturing high-resolution frame & selecting peak sharpness..."
         scan_status["candidates"] = []
+        scan_status["all_words"] = []
         scan_status["best_number"] = None
+        scan_status["has_image"] = False
 
-    # Collect ~8 frames over 0.6 seconds to select the sharpest frame
-    collected = []
-    t_collect = time.time()
-    while time.time() - t_collect < 0.6:
+    # Capture high-resolution frame (from Picamera2 main stream or fallback)
+    highres_frame = None
+    if active_picam2 is not None:
+        try:
+            highres_frame = active_picam2.capture_array("main")
+        except Exception:
+            pass
+
+    if highres_frame is None:
         with frame_lock:
-            frame = latest_frame.copy() if latest_frame is not None else None
-        if frame is not None:
-            h, w = frame.shape[:2]
-            rx = int(roi_config["x"] * w)
-            ry = int(roi_config["y"] * h)
-            rw = int(roi_config["w"] * w)
-            rh = int(roi_config["h"] * h)
-            crop = frame[ry:ry+rh, rx:rx+rw]
-            if crop.size > 0:
-                gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                s = cv2.Laplacian(gray, cv2.CV_64F).var()
-                collected.append((s, crop))
-        time.sleep(0.06)
+            highres_frame = latest_frame.copy() if latest_frame is not None else None
 
-    if not collected:
+    if highres_frame is None:
         with scan_lock:
             scan_status["state"] = "error"
-            scan_status["message"] = "No frames available."
+            scan_status["message"] = "No camera frame available."
         return
 
-    # Pick the #1 sharpest frame
-    collected.sort(key=lambda x: x[0], reverse=True)
-    best_s, best_crop = collected[0]
+    # Digital zoom crop if zoom > 1.05
+    zoom = roi_config.get("zoom", 1.0)
+    if zoom > 1.05:
+        h, w = highres_frame.shape[:2]
+        zh, zw = int(h / zoom), int(w / zoom)
+        y1 = (h - zh) // 2
+        x1 = (w - zw) // 2
+        highres_frame = cv2.resize(highres_frame[y1:y1+zh, x1:x1+zw], (w, h), interpolation=cv2.INTER_LINEAR)
+
+    # Crop the ROI
+    h, w = highres_frame.shape[:2]
+    rx = int(roi_config["x"] * w)
+    ry = int(roi_config["y"] * h)
+    rw = int(roi_config["w"] * w)
+    rh = int(roi_config["h"] * h)
+    crop = highres_frame[ry:ry+rh, rx:rx+rw]
+
+    if crop.size == 0:
+        with scan_lock:
+            scan_status["state"] = "error"
+            scan_status["message"] = "Invalid ROI crop size."
+        return
+
+    gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    s_val = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
 
     with scan_lock:
         scan_status["state"] = "analyzing"
-        scan_status["best_sharpness"] = best_s
-        scan_status["message"] = f"Peak Sharpness: {best_s:.0f}. Running fast color-isolated OCR..."
+        scan_status["best_sharpness"] = s_val
+        scan_status["message"] = f"Sharpness: {s_val:.0f}. Running EDATEC multi-pass OCR..."
 
-    # Preprocess (isolates yellow plastic, high contrast)
-    processed = preprocess_seal_for_ocr(best_crop)
-
-    # Run single-shot fast OCR
+    # Run the EDATEC OCR pipeline
     digits_expected = roi_config.get("digits", 0)
-    candidates = run_single_ocr(processed, digits_expected=digits_expected)
+    candidates, all_words, annotated = run_edatec_ocr_pipeline(crop, digits_expected=digits_expected)
 
     total_time = time.time() - t_start
     ranked = sorted(candidates.items(), key=lambda x: x[1], reverse=True)
@@ -707,12 +773,19 @@ def scan_worker():
         scan_status["state"] = "complete"
         scan_status["ocr_time"] = total_time
         scan_status["candidates"] = ranked
+        scan_status["all_words"] = all_words
+        scan_status["has_image"] = True
         if ranked:
             scan_status["best_number"] = ranked[0][0]
             scan_status["best_score"] = ranked[0][1]
-            scan_status["message"] = f"Detected: {ranked[0][0]} in {total_time:.2f} seconds!"
+            scan_status["message"] = f"Detected Seal: {ranked[0][0]} in {total_time:.2f} seconds!"
+        elif all_words:
+            first_word = all_words[0][0]
+            scan_status["best_number"] = first_word
+            scan_status["best_score"] = float(all_words[0][1])
+            scan_status["message"] = f"Detected Text: {first_word} in {total_time:.2f}s."
         else:
-            scan_status["message"] = f"No digits recognized in {total_time:.2f}s. Try increasing Digital Zoom (e.g. 1.8x)."
+            scan_status["message"] = f"No text recognized in {total_time:.2f}s. Align text inside box and adjust zoom."
 
 class StreamingHandler(server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -741,6 +814,17 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
             self.send_header("Content-Disposition", 'attachment; filename="snapshot.jpg"')
             self.end_headers()
             self.wfile.write(jpeg.tobytes())
+        elif self.path.startswith("/detected_result.jpg"):
+            if os.path.exists("/tmp/detected_result.jpg"):
+                with open("/tmp/detected_result.jpg", "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self.send_error(404, "No detection result image available")
         elif self.path == "/scan_status":
             with scan_lock:
                 data = json.dumps(scan_status)
@@ -759,7 +843,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                 while running:
                     with frame_lock:
                         if latest_frame is None:
-                            time.sleep(0.04)
+                            time.sleep(0.02)
                             continue
                         draw_frame = latest_frame.copy()
 
@@ -776,14 +860,14 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
 
                         cv2.rectangle(draw_frame, (rx, ry), (rx + rw, ry + rh), box_color, 2)
                         cx, cy = rx + rw // 2, ry + rh // 2
-                        cv2.line(draw_frame, (cx - 15, cy), (cx + 15, cy), box_color, 1)
-                        cv2.line(draw_frame, (cx, cy - 15), (cx, cy + 15), box_color, 1)
+                        cv2.line(draw_frame, (cx - 12, cy), (cx + 12, cy), box_color, 1)
+                        cv2.line(draw_frame, (cx, cy - 12), (cx, cy + 12), box_color, 1)
 
                         status_str = f"FOCUS: {quality} ({int(sharp_val)})"
-                        cv2.putText(draw_frame, status_str, (rx, max(22, ry - 8)),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, box_color, 2)
+                        cv2.putText(draw_frame, status_str, (rx, max(18, ry - 6)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 1)
 
-                    ret, jpeg = cv2.imencode(".jpg", draw_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+                    ret, jpeg = cv2.imencode(".jpg", draw_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 55])
                     if not ret:
                         continue
                     self.wfile.write(b"--FRAME\r\n")
@@ -792,7 +876,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(jpeg.tobytes())
                     self.wfile.write(b"\r\n")
-                    time.sleep(0.06)
+                    time.sleep(0.03) # 30 FPS target
             except (ConnectionResetError, BrokenPipeError):
                 pass
         else:

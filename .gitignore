@@ -3,18 +3,42 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Output images & debug data
-*.jpg
-*.jpeg
-*.png
-test_ocr/
-*_ocr/
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # Virtual environments
 venv/
-.venv/
 env/
+ENV/
 
-# Environment variables & secrets
-.env
-.env.*
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# App specific
+captures/
+test_pi_res.py
+test_sudo.py
+bench_pi.py
+check_pi.py
+pi_stream_server.py

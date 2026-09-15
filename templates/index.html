@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StickCam Padlock AI - Mobile Hub</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+    <style>
+        :root {
+            --bg-base: #0a0e17;
+            --bg-card: #121826;
+            --border-card: #1e293b;
+            --accent-cyan: #38bdf8;
+            --accent-emerald: #10b981;
+            --accent-amber: #f59e0b;
+            --text-main: #f1f5f9;
+            --text-sub: #94a3b8;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        body { background: var(--bg-base); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
+
+        header {
+            background: rgba(18, 24, 38, 0.95);
+            border-bottom: 1px solid var(--border-card);
+            padding: 14px 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .brand { display: flex; align-items: center; gap: 10px; }
+        .brand h1 { font-size: 1.35rem; font-weight: 800; color: var(--accent-cyan); letter-spacing: -0.5px; }
+        .badge { background: #0369a1; color: #fff; padding: 3px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 700; }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 20px;
+            padding: 24px 28px;
+            flex: 1;
+            max-width: 1600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* Stream Viewport */
+        .video-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .video-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Video Toolbar */
+        .video-toolbar {
+            padding: 14px 20px;
+            background: #0f172a;
+            border-top: 1px solid var(--border-card);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .tool-btn-group { display: flex; gap: 8px; }
+        .btn {
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #334155;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn:hover { background: #334155; color: #fff; }
+        .btn:active { transform: scale(0.97); }
+        .btn-success { background: #065f46; color: #34d399; border-color: #059669; }
+        .btn-success:hover { background: #047857; color: #fff; }
+
+        /* Sidebar Panels */
+        .sidebar { display: flex; flex-direction: column; gap: 20px; }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
+            border-radius: 14px;
+            padding: 18px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+        .card-title { font-size: 0.95rem; font-weight: 700; color: #e2e8f0; }
+
+        /* Padlock Recognition Card */
+        .padlock-display {
+            background: #0b1120;
+            border: 2px solid var(--border-card);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+            margin-bottom: 12px;
+            transition: border-color 0.3s;
+        }
+        .padlock-display.has-code {
+            border-color: var(--accent-emerald);
+            background: rgba(16, 185, 129, 0.05);
+        }
+        .padlock-id {
+            font-size: 1.6rem;
+            font-weight: 800;
+            font-family: monospace;
+            color: var(--accent-emerald);
+            letter-spacing: 2px;
+            margin: 4px 0;
+            user-select: all;
+        }
+        .padlock-meta { font-size: 0.8rem; color: var(--text-sub); }
+
+        /* Phone QR Code Card */
+        .qr-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            gap: 12px;
+        }
+        .qr-container {
+            background: #fff;
+            padding: 12px;
+            border-radius: 12px;
+            display: inline-block;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        .phone-url {
+            font-size: 0.85rem;
+            font-family: monospace;
+            background: #0f172a;
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid #1e293b;
+            color: var(--accent-cyan);
+            word-break: break-all;
+        }
+
+        /* Hotkey Legend */
+        .legend-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            font-size: 0.82rem;
+            border-bottom: 1px solid #1e293b;
+        }
+        .legend-row:last-child { border-bottom: none; }
+        .legend-key { font-weight: 700; color: var(--accent-cyan); font-family: monospace; }
+        .legend-desc { color: var(--text-sub); }
+
+        /* Toast notification */
+        #toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: #0f172a;
+            color: var(--accent-emerald);
+            border: 1px solid var(--accent-emerald);
+            padding: 10px 18px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.3s;
+            pointer-events: none;
+            z-index: 100;
+        }
+        #toast.show { opacity: 1; transform: translateY(0); }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="brand">
+            <h1>StickCam AI Padlock Hub</h1>
+            <span class="badge">V6 MOBILE</span>
+        </div>
+        <div>
+            <span style="font-size: 0.85rem; color: var(--text-sub);">Server: <strong>{{ server_ip }}:{{ port }}</strong></span>
+        </div>
+    </header>
+
+    <div class="main-layout">
+        <!-- Live Video Feed -->
+        <div class="video-card">
+            <div class="video-container">
+                <img src="/stream.mjpg" alt="Live HUD Stream" onerror="this.src='/static/no_feed.jpg'">
+            </div>
+            <div class="video-toolbar">
+                <div class="tool-btn-group">
+                    <button class="btn" onclick="sendAction('freeze')">⏸ Freeze / Resume</button>
+                    <button class="btn" onclick="sendAction('save')">💾 Save Snapshot</button>
+                    <button class="btn" onclick="sendAction('toggle_boxes')">🔲 Toggle Boxes</button>
+                    <button class="btn" onclick="sendAction('clear')">🔄 Clear Detections</button>
+                </div>
+                <div class="tool-btn-group">
+                    <button class="btn" onclick="sendAction('zoom_in')">🔍+ Zoom In</button>
+                    <button class="btn" onclick="sendAction('zoom_out')">🔍- Zoom Out</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Active Recognition -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">PADLOCK RECOGNITION</span>
+                    <span id="badgeActive" style="color: var(--accent-emerald); font-size: 0.75rem; font-weight: 700;">LIVE</span>
+                </div>
+                <div id="padlockBox" class="padlock-display">
+                    <div style="font-size: 0.75rem; color: var(--text-sub); text-transform: uppercase;">Active Serial</div>
+                    <div id="padlockCode" class="padlock-id">SEARCHING...</div>
+                    <div id="padlockConfidence" class="padlock-meta">Awaiting camera focus</div>
+                </div>
+                <button id="btnCopy" class="btn btn-success" style="width: 100%; justify-content: center;" onclick="copyActiveSerial()">
+                    📋 Copy Serial Number
+                </button>
+            </div>
+
+            <!-- Connect Phone -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">📱 CONNECT PHONE CAMERA</span>
+                </div>
+                <div class="qr-section">
+                    <p style="font-size: 0.8rem; color: var(--text-sub);">
+                        Scan QR code with your phone camera or open the link in mobile Safari/Chrome:
+                    </p>
+                    <div class="qr-container" id="qrcode"></div>
+                    <div class="phone-url" id="phoneUrlText">{{ phone_url }}</div>
+                </div>
+            </div>
+
+            <!-- Keyboard Hotkeys -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">⌨️ DESKTOP HOTKEYS</span>
+                </div>
+                <div class="legend-row"><span class="legend-key">[SPACE]</span><span class="legend-desc">Freeze / Resume</span></div>
+                <div class="legend-row"><span class="legend-key">[S]</span><span class="legend-desc">Save snapshot</span></div>
+                <div class="legend-row"><span class="legend-key">[C]</span><span class="legend-desc">Copy padlock code</span></div>
+                <div class="legend-row"><span class="legend-key">[T]</span><span class="legend-desc">Toggle bounding boxes</span></div>
+                <div class="legend-row"><span class="legend-key">[R]</span><span class="legend-desc">Reset detections</span></div>
+                <div class="legend-row"><span class="legend-key">[+] / [-]</span><span class="legend-desc">Digital zoom</span></div>
+                <div class="legend-row"><span class="legend-key">[Q]</span><span class="legend-desc">Quit application</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast">Copied to clipboard!</div>
+
+    <script>
+        const phoneUrl = "{{ phone_url }}";
+
+        // Generate QR Code
+        try {
+            const qr = qrcode(0, 'M');
+            qr.addData(phoneUrl);
+            qr.make();
+            document.getElementById('qrcode').innerHTML = qr.createImgTag(4, 0);
+        } catch (e) {
+            console.error("QR Code error:", e);
+        }
+
+        // Poll telemetry
+        let lastPadlockCode = null;
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/detections');
+                const data = await res.json();
+                const codeEl = document.getElementById('padlockCode');
+                const confEl = document.getElementById('padlockConfidence');
+                const boxEl = document.getElementById('padlockBox');
+
+                if (data.best_padlock_id) {
+                    codeEl.textContent = data.best_padlock_id;
+                    confEl.textContent = `Confidence: ${(data.best_confidence * 100).toFixed(1)}% | Latency: ${data.latency_ms.toFixed(0)}ms`;
+                    boxEl.classList.add('has-code');
+                    lastPadlockCode = data.best_padlock_id;
+                } else {
+                    codeEl.textContent = "SEARCHING...";
+                    confEl.textContent = `Camera: ${data.fps.toFixed(1)} FPS | AI: ${data.ocr_time_ms.toFixed(0)}ms`;
+                    boxEl.classList.remove('has-code');
+                }
+            } catch (e) {}
+        }, 300);
+
+        function copyActiveSerial() {
+            if (lastPadlockCode) {
+                navigator.clipboard.writeText(lastPadlockCode);
+                showToast(`Copied: ${lastPadlockCode}`);
+            } else {
+                showToast("No serial detected yet.");
+            }
+        }
+
+        async function sendAction(action) {
+            try {
+                const res = await fetch(`/api/action/${action}`, { method: 'POST' });
+                const json = await res.json();
+                if (json.message) showToast(json.message);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 2000);
+        }
+    </script>
+</body>
+</html>

@@ -1,20 +1,11 @@
-# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
-*$py.class
-
-# Output images & debug data
-*.jpg
-*.jpeg
-*.png
-test_ocr/
-*_ocr/
-
-# Virtual environments
-venv/
-.venv/
-env/
-
-# Environment variables & secrets
+*.pyc
+*.pyo
+*.pyd
 .env
-.env.*
+captures/
+*.log
+*.pem
+.DS_Store
+Thumbs.db
+repo_temp/

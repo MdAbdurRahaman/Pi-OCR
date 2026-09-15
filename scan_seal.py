@@ -1,149 +1,100 @@
-import argparse
-import csv
-import io
+"""
+scan_seal.py - Standalone Padlock & Seal Character Recognition Scanner.
+Can be run on static images or captures directly from the command line.
+"""
+import sys
 import os
 import re
-import subprocess
-from pathlib import Path
+import argparse
+import time
 import cv2
+import numpy as np
+from rapidocr_onnxruntime import RapidOCR
 
-parser = argparse.ArgumentParser(description="Read seal number from image using OCR")
-parser.add_argument("image", help="Captured image filename")
-parser.add_argument(
-    "--roi",
-    nargs=4,
-    type=float,
-    default=[0.25, 0.40, 0.50, 0.20],
-    metavar=("X", "Y", "WIDTH", "HEIGHT"),
-    help="Crop fractions from 0 to 1; default is a central strip [X, Y, WIDTH, HEIGHT]",
-)
-parser.add_argument(
-    "--digits",
-    type=int,
-    default=0,
-    help="Exact number of digits, if known",
-)
-parser.add_argument(
-    "--rotate",
-    type=int,
-    choices=[0, 90, 180, 270],
-    default=0,
-    help="Clockwise rotation applied after cropping",
-)
-args = parser.parse_args()
 
-frame = cv2.imread(args.image)
-if frame is None:
-    raise SystemExit("Cannot read image: " + args.image)
+def scan_image(image_path: str, conf_threshold: float = 0.40, save_annotated: bool = True):
+    if not os.path.exists(image_path):
+        print(f"[-] Error: Image not found: {image_path}")
+        return None
 
-x, y, rw, rh = args.roi
-if (min(x, y) < 0 or rw <= 0 or rh <= 0 or x + rw > 1 or y + rh > 1):
-    raise SystemExit("Invalid ROI: crop must fit inside the image.")
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"[-] Error: Failed to load image: {image_path}")
+        return None
 
-height, width = frame.shape[:2]
-x1, y1 = int(x * width), int(y * height)
-x2, y2 = int((x + rw) * width), int((y + rh) * height)
-crop = frame[y1:y2, x1:x2]
-if crop.size == 0:
-    raise SystemExit("Crop is empty.")
+    h, w = img.shape[:2]
+    print(f"[*] Processing image: {image_path} ({w}x{h})")
 
-rotations = {
-    90: cv2.ROTATE_90_CLOCKWISE,
-    180: cv2.ROTATE_180,
-    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
-}
-if args.rotate:
-    crop = cv2.rotate(crop, rotations[args.rotate])
+    engine = RapidOCR()
+    t0 = time.time()
+    results, elapse = engine(img)
+    t1 = time.time()
+    elapsed_ms = (t1 - t0) * 1000.0
 
-# Separate debug folder for each input image
-debug = Path(args.image).with_suffix("")
-debug = debug.parent / (debug.name + "_ocr")
-debug.mkdir(exist_ok=True, parents=True)
-cv2.imwrite(str(debug / "crop.jpg"), crop)
+    print(f"[*] OCR Completed in {elapsed_ms:.1f}ms")
 
-gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    detections = []
+    best_id = None
+    best_score = 0.0
 
-# Keep processing bounded on the Pi Zero
-if gray.shape[1] > 1200:
-    scale = 1200 / gray.shape[1]
-    gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-
-# Contrast Limited Adaptive Histogram Equalization + Unsharp Mask
-clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-contrast = clahe.apply(gray)
-blurred = cv2.GaussianBlur(contrast, (0, 0), 2.0)
-gray = cv2.addWeighted(contrast, 1.5, blurred, -0.5, 0)
-
-_, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-# Expect dark digits on a lighter background
-if binary.mean() < 127:
-    binary = cv2.bitwise_not(binary)
-
-env = os.environ.copy()
-env["OMP_THREAD_LIMIT"] = "1"
-candidates = {}
-
-for name, processed in [("gray", gray), ("binary", binary)]:
-    processed = cv2.copyMakeBorder(
-        processed, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255
-    )
-    image_path = debug / (name + ".png")
-    cv2.imwrite(str(image_path), processed)
-
-    command = [
-        "tesseract",
-        str(image_path),
-        "stdout",
-        "-l",
-        "eng",
-        "--oem",
-        "1",
-        "--psm",
-        "7",
-        "-c",
-        "tessedit_char_whitelist=0123456789",
-        "tsv",
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=60,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        print(name + ": OCR timed out.")
-        continue
-    except subprocess.CalledProcessError as error:
-        raise SystemExit(error.stderr)
-
-    rows = csv.DictReader(io.StringIO(result.stdout), delimiter="\t")
-    for row in rows:
-        text = row.get("text", "").strip()
-        # Do not remove characters or join unrelated text.
-        if not re.fullmatch(r"[0-9]+", text):
-            continue
-        if args.digits:
-            if len(text) != args.digits:
+    if results:
+        for box, text, score_str in results:
+            score = float(score_str)
+            clean_text = text.strip()
+            if score < conf_threshold or len(clean_text) < 2:
                 continue
-        elif not 5 <= len(text) <= 12:
-            continue
 
-        confidence = float(row["conf"])
-        if confidence < 0:
-            continue
-        candidates[text] = max(confidence, candidates.get(text, -1))
+            is_serial = bool(re.search(r'[A-Z0-9]{4,10}', clean_text.replace(" ", "")))
+            pts = np.array(box, dtype=np.int32)
+            detections.append({
+                "text": clean_text,
+                "score": score,
+                "pts": pts,
+                "is_serial": is_serial
+            })
 
-print("Debug images:", debug)
-if not candidates:
-    print("No candidate found. Check focus, crop, and orientation.")
-else:
-    print("\nOCR candidates — visually verify before using:")
-    for number, score in sorted(
-        candidates.items(), key=lambda item: item[1], reverse=True
-    ):
-        print(f"  {number}  (OCR score: {score:.1f})")
-    print("\nThe OCR score is NOT a probability of correctness.")
+            if is_serial and score > best_score:
+                best_id = clean_text
+                best_score = score
+
+            border_color = (0, 255, 100) if is_serial else (255, 190, 20)
+            cv2.polylines(img, [pts], isClosed=True, color=border_color, thickness=2)
+            lbl = f"{clean_text} ({int(score*100)}%)"
+            min_y = int(np.min(pts[:, 1]))
+            min_x = int(np.min(pts[:, 0]))
+            cv2.putText(img, lbl, (min_x, max(20, min_y - 6)), cv2.FONT_HERSHEY_DUPLEX, 0.55, (255, 255, 255), 1)
+
+    print("\n" + "=" * 50)
+    print(f"  FOUND {len(detections)} DETECTIONS:")
+    print("=" * 50)
+    for d in detections:
+        marker = "[SERIAL]" if d["is_serial"] else "  [TEXT]"
+        print(f"  {marker} | '{d['text']}' | Confidence: {d['score']*100:.1f}%")
+    print("=" * 50)
+    if best_id:
+        print(f"  --> BEST PADLOCK ID: {best_id} ({best_score*100:.1f}%)")
+    else:
+        print("  --> No valid padlock serial number detected.")
+    print("=" * 50 + "\n")
+
+    if save_annotated:
+        base, ext = os.path.splitext(image_path)
+        out_path = f"{base}_annotated{ext}"
+        cv2.imwrite(out_path, img)
+        print(f"[+] Saved annotated visualization to: {out_path}")
+
+    return best_id
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Scan seal/padlock characters from image")
+    parser.add_argument("image", type=str, help="Path to input image file")
+    parser.add_argument("--conf", type=float, default=0.40, help="Confidence threshold (default: 0.40)")
+    parser.add_argument("--no-save", action="store_true", help="Do not save annotated output image")
+    args = parser.parse_args()
+
+    scan_image(args.image, conf_threshold=args.conf, save_annotated=not args.no_save)
+
+
+if __name__ == "__main__":
+    main()

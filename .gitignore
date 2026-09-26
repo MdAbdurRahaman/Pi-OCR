@@ -44,3 +44,5 @@ check_pi.py
 pi_stream_server.py
 test_hdmi_*.jpg
 test_tft_*.jpg
+*_snapshot.jpg
+hdmi_snapshot.jpg

@@ -10,6 +10,24 @@ import argparse
 from pathlib import Path
 import paramiko
 
+# Ensure safe UTF-8 printing on Windows console
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+def safe_print(*args, **kwargs):
+    """Safely prints text on any Windows console encoding without crashing."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        sanitized = sep.join(str(a).encode("ascii", errors="replace").decode("ascii") for a in args)
+        print(sanitized, end=end)
+
 
 def get_local_pc_ip() -> str:
     """Detects local PC IP address on the network."""
@@ -23,7 +41,7 @@ def get_local_pc_ip() -> str:
         return "192.168.68.123"
 
 
-DEFAULT_HOSTS = ["192.168.68.129", "192.168.68.145", "pizero2.local"]
+DEFAULT_HOSTS = ["pizero2.local", "192.168.68.151", "192.168.68.145", "192.168.68.129"]
 DEFAULT_USER = "stickcam"
 DEFAULT_PASS = "Dubo2024"
 
@@ -92,6 +110,8 @@ def deploy():
     run_sudo("systemctl stop seal-stream.service || true")
     run_sudo("systemctl stop seal-burst.service || true")
     run_sudo("systemctl stop seal-hdmi.service || true")
+    run_sudo("systemctl disable seal-stream.service || true")
+    run_sudo("systemctl disable seal-burst.service || true")
 
     # 2. Upload Python scripts and assets
     base_dir = Path(__file__).resolve().parent
@@ -145,7 +165,7 @@ def deploy():
     print("\n" + "=" * 68)
     print("  DEPLOYMENT STATUS:")
     print("=" * 68)
-    print(status_out)
+    safe_print(status_out)
     print("\n[+] 3.5\" HDMI Display scanner is now running on the Raspberry Pi!")
     print(f"[+] Access web mirror at: http://{connected_host}:8000")
     print("=" * 68)
